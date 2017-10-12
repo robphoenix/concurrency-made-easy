@@ -1,5 +1,11 @@
 # Concurrency Made Easy
 
+This is not my work. This is a talk given by
+[@davecheney](https://github.com/davecheney). I wanted to try and understand it
+better by writing up the various refactorings he goes through. I highly
+recommend watching it yourself. And paying attention to most everything Dave
+says about Go.
+
 * [video](https://youtu.be/yKQOunhhf4A)
 * [slides](https://dave.cheney.net/paste/concurrency-made-easy.pdf)
 
