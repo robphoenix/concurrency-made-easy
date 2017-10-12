@@ -88,7 +88,7 @@ Rather than run `ListenAndServe` in a goroutine, leaving us with the problem of
 what to do with the main goroutine Simply run `ListenAndServe` on the main
 goroutine itself.
 
-So this is my first suggestion:
+So this is my first recommendation:
 
 > If your goroutine cannot make progress until it gets the result from another,
   oftentimes it is simpler to just do the work yourself rather than to delegate
@@ -214,7 +214,7 @@ When each goroutine is done, the reverse occurs, we remove a value from the
 `sem` channel, lowering the semaphore, and then defer calls `wg.Done` as the final operation,
 to indicate that the goroutine is done.
 
-So my suggestion to you is...
+So my recommendation to you is...
 
 > Always release locks and semaphores in the reverse order to which you acquired them.
 
@@ -240,3 +240,91 @@ new data; nothing more, nothing less.
 
 Closing a channel is not necessary to *"free"* a channel. You don’t need to close
 a channel to *"clean up"* its resources.
+
+## Speaking of semaphores, let’s look at how sem is used.
+
+The role of `sem` is to make sure that at any one time, there is a cap on the
+number of fetch operations running. In this example, `sem` has a capacity of
+four.  But if you look closely, `sem` isn’t guaranteeing there are no more than
+four fetch operations running, it’s guaranteeing that there are no more than
+four goroutines running.
+
+```
+sem := make(chan int, 4) // four jobs at once
+
+for _, repo := range repos {
+	sem <- 1
+	go func() {
+		defer wg.Done()
+		if err := fetch(repo); err != nil {
+			errChan <- err
+		}
+		<-sem
+	}()
+}
+```
+
+Assuming there are enough values in `repos`, each time through the loop we try
+to push the number 1 onto the `sem` channel, then we fire off a fetch goroutine.
+What happens when it’s the fifth time through the loop? Most likely we’ll have
+four fetch goroutines running, or possibly those four goroutines won’t even have
+been scheduled to run yet - remember that the scheduler doesn’t give any
+guarantees if it will run a goroutine immediately, or schedule for later.  On
+the fifth iteration the main loop is going to block trying to push a value onto
+`sem`. Rather than spawning `len(repos)` goroutines which coordinate amongst
+themselves for a semaphore, this loop will proceed at the rate that fetch
+invocations finish.  While it doesn’t matter in this example - restore blocks
+until all `repos` have been fetched - there are many situations where the
+calling code may expect the function scheduling its work to complete quickly and
+return, while the work occurs in the background.
+
+The solution to this problem is to move `sem <- 1` inside the goroutine.
+
+```
+func restore(repos []string) error {
+	errChan := make(chan error, 1)
+	sem := make(chan int, 4) // four jobs at once
+	var wg sync.WaitGroup
+	wg.Add(len(repos))
+	for _, repo := range repos {
+		go func() {
+			defer wg.Done()
+			sem <- 1
+			if err := fetch(repo); err != nil {
+				errChan <- err
+			}
+			<-sem
+		}()
+	}
+	wg.Wait()
+	close(errChan)
+	return <-errChan
+}
+```
+
+```diff
+@@ -15,9 +15,9 @@ func restore(repos []string) error {
+         var wg sync.WaitGroup
+         wg.Add(len(repos))
+         for _, repo := range repos {
+-                sem <- 1
+                 go func() {
+                         defer wg.Done()
++                        sem <- 1
+                         if err := fetch(repo); err != nil {
+                                 errChan <- err
+                         }
+```
+
+Now all the fetch goroutines will be created immediately, and will negotiate a semaphore when they get scheduled by the runtime.
+
+And this leads to my next recommendation:
+
+> Acquire semaphores when you’re ready to use them.
+
+Although goroutines are cheap to create and schedule, the resources they operate
+on, files, sockets, bandwidth, and so on, are often scarcer. The pattern of
+using a channel as a semaphore to limit work in progress is quite common.
+However, to make sure that you don’t unduly block the code offloading work to a
+goroutine, acquire a semaphore when you’re ready to use them, not when you
+expect to use them.
