@@ -21,7 +21,7 @@ says about Go.
 
 ## If you have to wait for the result of an operation, it’s easier to do it yourself.
 
-Here’s a simple Web 2.0 Hello World program. Can anyone tell me what’s wrong with it?
+Here’s a simple Web 2.0 Hello World program. What’s wrong with it?
 
 ```
 func main() {
