@@ -3,7 +3,17 @@
 * [video](https://youtu.be/yKQOunhhf4A)
 * [slides](https://dave.cheney.net/paste/concurrency-made-easy.pdf)
 
-## Let’s start with the go keyword.
+## Contents
+
+* [If you have to wait for the result of an operation, it’s easier to do it yourself.](#if-you-have-to-wait-for-the-result-of-an-operation-its-easier-to-do-it-yourself)
+* [Release locks and semaphores in the reverse order you acquired them.](#release-locks-and-semaphores-in-the-reverse-order-you-acquired-them)
+* [Channels aren’t resources like files or sockets, you don’t need to close them to free them.](#channels-arent-resources-like-files-or-sockets-you-dont-need-to-close-them-to-free-them)
+* [Acquire semaphores when you’re ready to use them.](#acquire-semaphores-when-youre-ready-to-use-them)
+* [Avoid mixing anonymous functions and goroutines.](#avoid-mixing-anonymous-functions-and-goroutines)
+* [Before you start a goroutine, always know when, and how, it will stop.](#before-you-start-a-goroutine-always-know-when-and-how-it-will-stop)
+* [Conclusion](#conclusion)
+
+## If you have to wait for the result of an operation, it’s easier to do it yourself.
 
 Here’s a simple Web 2.0 Hello World program. Can anyone tell me what’s wrong with it?
 
@@ -97,7 +107,7 @@ So this is my first recommendation:
 This often coincides with eliminating a lot of state tracking and channel
 manipulation required to plumb a result back from a goroutine to its initiator.
 
-## Always release locks and semaphores in the reverse order to which you acquired them.
+## Release locks and semaphores in the reverse order you acquired them.
 
 In this example, simplified from a prior version of gb-vendor, we’re attempting
 to fetch a set of dependencies from their remote repositories, in parallel.
@@ -224,7 +234,7 @@ So my recommendation to you is...
 At best, mixing the order of acquire and release generates confusing code which is difficult to reason about.
 At worst, mixing acquire and release leads to lock inversion and deadlocks.
 
-## Why `close(sem)`?
+## Channels aren’t resources like files or sockets, you don’t need to close them to free them.
 
 Now that we’ve rearranged the program a little, we can ask another question.
 What is the reason for closing `sem`?  If a restaurant closes, it does not remove
@@ -244,7 +254,7 @@ new data; nothing more, nothing less.
 Closing a channel is not necessary to *"free"* a channel. You don’t need to close
 a channel to *"clean up"* its resources.
 
-## Speaking of semaphores, let’s look at how sem is used.
+## Acquire semaphores when you’re ready to use them.
 
 The role of `sem` is to make sure that at any one time, there is a cap on the
 number of fetch operations running. In this example, `sem` has a capacity of
@@ -334,7 +344,9 @@ However, to make sure that you don’t unduly block the code offloading work to 
 goroutine, acquire a semaphore when you’re ready to use them, not when you
 expect to use them.
 
-## Hopefully we’ve got all the bugs out of this program.
+## Avoid mixing anonymous functions and goroutines.
+
+Hopefully we’ve got all the bugs out of this program.
 
 But there’s one more obvious one that we haven’t talked about yet. And it’s a
 serious one that catches almost every Go programmer out at least once.
@@ -449,7 +461,9 @@ of that work—the worker function.
 
 Have we fixed all the issues with this code? Not yet, there’s still one left.
 
-## Let’s look at the core of the worker function, calling fetch and handling the error.
+## Before you start a goroutine, always know when, and how, it will stop.
+
+Let’s look at the core of the worker function, calling fetch and handling the error.
 
 ```
 if err := fetch(repo); err != nil {
