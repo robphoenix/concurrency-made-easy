@@ -220,3 +220,23 @@ So my suggestion to you is...
 
 At best, mixing the order of acquire and release generates confusing code which is difficult to reason about.
 At worst, mixing acquire and release leads to lock inversion and deadlocks.
+
+## Why `close(sem)`?
+
+Now that we’ve rearranged the program a little, we can ask another question.
+What is the reason for closing `sem`?  If a restaurant closes, it does not remove
+anyone seated at that time, it’s just an indication that the restaurant is not
+taking additional patrons.  Similarly, channels are not resources like files or
+network sockets; the close signal does not free a channel, it just marks that
+channel as no longer accepting new values.  In our example nothing is waiting in
+a select or range loop for a close signal on `sem`, so we can remove the
+`close(sem)` call.
+
+> Channels aren’t resources like files or sockets, you don’t need to close them
+  to free them.
+
+Closing a channel is a signal to its receivers that it is no longer accepting
+new data; nothing more, nothing less.
+
+Closing a channel is not necessary to *"free"* a channel. You don’t need to close
+a channel to *"clean up"* its resources.
