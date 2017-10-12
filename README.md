@@ -99,9 +99,10 @@ manipulation required to plumb a result back from a goroutine to its initiator.
 
 ## Always release locks and semaphores in the reverse order to which you acquired them.
 
-[In this example](https://play.golang.org/p/uksJ4-nnr0), simplified from a prior
-version of gb-vendor, we’re attempting to fetch a set of dependencies from their
-remote repositories, in parallel.
+In this example, simplified from a prior version of gb-vendor, we’re attempting
+to fetch a set of dependencies from their remote repositories, in parallel.
+
+[Go Playground](https://play.golang.org/p/uksJ4-nnr0)
 
 ```
 func restore(repos []string) error {
@@ -162,8 +163,10 @@ What does receiving from a closed channel return? **the zero value**
 And when does it return? **immediately**
 
 But you had to think about it to be sure. The logic is unnecessarily confusing.
-If we simplify the defer statement and reorder the operations [to
-get](https://play.golang.org/p/xmzIEzN04J)...
+If we simplify the defer statement and reorder the operations to
+get.
+
+[Go Playground](https://play.golang.org/p/xmzIEzN04J)
 
 ```
 func restore(repos []string) error {
@@ -280,6 +283,8 @@ return, while the work occurs in the background.
 
 The solution to this problem is to move `sem <- 1` inside the goroutine.
 
+[Go Playground](https://play.golang.org/p/jyiRT4lnI9)
+
 ```
 func restore(repos []string) error {
 	errChan := make(chan error, 1)
@@ -304,16 +309,16 @@ func restore(repos []string) error {
 
 ```diff
 @@ -15,9 +15,9 @@ func restore(repos []string) error {
-         var wg sync.WaitGroup
-         wg.Add(len(repos))
-         for _, repo := range repos {
--                sem <- 1
-                 go func() {
-                         defer wg.Done()
-+                        sem <- 1
-                         if err := fetch(repo); err != nil {
-                                 errChan <- err
-                         }
+        var wg sync.WaitGroup
+        wg.Add(len(repos))
+        for _, repo := range repos {
+-               sem <- 1
+                go func() {
+                        defer wg.Done()
++                       sem <- 1
+                        if err := fetch(repo); err != nil {
+                                errChan <- err
+                        }
 ```
 
 Now all the fetch goroutines will be created immediately, and will negotiate a semaphore when they get scheduled by the runtime.
@@ -328,3 +333,260 @@ using a channel as a semaphore to limit work in progress is quite common.
 However, to make sure that you don’t unduly block the code offloading work to a
 goroutine, acquire a semaphore when you’re ready to use them, not when you
 expect to use them.
+
+## Hopefully we’ve got all the bugs out of this program.
+
+But there’s one more obvious one that we haven’t talked about yet. And it’s a
+serious one that catches almost every Go programmer out at least once.
+
+The variable `repo` in the for loop is lexically captured by the anonymous function executed as a goroutine.
+
+This is going to lead to two problems:
+1. The value of repo inside the goroutine is going to be overwritten on each
+   loop iteration; all the fetch calls will likely end up trying to fetch the
+   last repository.
+1. This is a data race because we have one goroutine assigning to repo
+   concurrently with others are trying to read it.
+
+This is one of the classic Go paper cuts which all of us have to learn the
+hard way. You might think that rewriting the program to use an index variable
+would solve it But in fact this is just a different version of the same problem;
+rather than capturing `repo` lexically, each goroutine captures the variable `i`.
+
+In my opinion, the cause of this common error is the interaction between
+anonymous functions, lexical closures, and goroutines.  It’s cute to be able to
+write an anonymous function and execute it inline with a goroutine, but the
+reader has to consider the effects of lexical closure, and we know that the
+ideas of nested scopes are already a pain point for many developers no matter
+their level of experience.
+
+Instead what we must do is ensure that unique values of `repo` (or `i`) are
+passed to each fetch goroutine as they are invoked.  There are a few ways to do
+this, but the most obvious is to explicitly pass the repo value into our
+goroutine.
+
+[Go Playground](https://play.golang.org/p/4vgsocLkKp)
+
+```
+func restore(repos []string) error {
+	errChan := make(chan error, 1)
+	sem := make(chan int, 4) // four jobs at once
+	var wg sync.WaitGroup
+	wg.Add(len(repos))
+	for i := range repos {
+		go func(repo string) {
+			defer wg.Done()
+			sem <- 1
+			if err := fetch(repo); err != nil {
+				errChan <- err
+			}
+			<-sem
+		}(repos[i])
+	}
+	wg.Wait()
+	close(errChan)
+	return <-errChan
+}
+```
+
+```diff
+@@ -15,14 +15,14 @@ func restore(repos []string) error {
+        var wg sync.WaitGroup
+        wg.Add(len(repos))
+        for _, repo := range repos {
+-               go func() {
++               go func(repo string) {
+                        defer wg.Done()
+                        sem <- 1
+                        if err := fetch(repo); err != nil {
+                                errChan <- err
+                        }
+                        <-sem
+-               }()
++               }(repo)
+        }
+```
+
+The recommendation I draw from this is...
+
+> Avoid mixing anonymous functions and goroutines
+
+To apply my own advice, we replace the anonymous function with a named one, and
+pass all the variables necessary to it.
+
+[Go Playground](https://play.golang.org/p/TfYqFYZ7tL)
+
+```
+func restore(repos []string) error {
+	errChan := make(chan error, 1)
+	sem := make(chan int, 4) // four jobs at once
+	var wg sync.WaitGroup
+	wg.Add(len(repos))
+	for _, repo := range repos {
+		go worker(repo, sem, &wg, errChan)
+	}
+	wg.Wait()
+	close(errChan)
+	return <-errChan
+}
+
+func worker(repo string, sem chan int, wg *sync.WaitGroup, errChan chan error) {
+	defer wg.Done()
+	sem <- 1
+	if err := fetch(repo); err != nil {
+		errChan <- err
+	}
+	<-sem
+}
+```
+
+This results in a less pithy example, but in return it eliminates the
+possibility of lexical capture, and the associated data race.
+
+So now, after this review we’ve refactored the code to make a clean separation
+between producing work to be performed—our restore function—from the execution
+of that work—the worker function.
+
+Have we fixed all the issues with this code? Not yet, there’s still one left.
+
+## Let’s look at the core of the worker function, calling fetch and handling the error.
+
+```
+if err := fetch(repo); err != nil {
+	errChan <- err
+}
+```
+
+What happens if more than one fetch fails, say if the network goes down and all the fetches fail at once. What
+would happen?
+
+Let’s have a look at the declaration of errChan.
+
+```
+errChan := make(chan error, 1)
+```
+
+It’s a buffered channel with a capacity of one. But our semaphore channel has a
+capacity of four, so potentially we could have up to four goroutines trying to
+write errors to `errChan`.
+
+`errChan` won’t be read from until `wg.Wait` returns, and `wg.Wait` will not
+return until `wg.Done` has been called in each goroutine. So we have a potential
+deadlock situation.  And to resolve this, I want to introduce my last piece of
+advice...
+
+> Before you start a goroutine, always know when and how it will stop.
+
+How to we go about applying this advice? I like to work backwards and ask what
+are the ways this goroutine can exit. We know the goroutine starts at the
+`worker` function, so when `worker` exits the goroutine is done.
+
+Because this function contains a `defer` statement we consider this statement
+last. If there were multiple `defer` statements they are executed last in, first
+out.  `wg.Done` is a signal the waitgroup - another kind of semaphore - that the task
+is done. `wg.Done` never blocks so this statement will not prevent `worker`
+returning.
+
+The penultimate statement is the receive from `<-sem`, which cannot block because
+we could not have got to this point without placing a value into `sem`.  The value
+we get out may not be the one we placed there, but we are guaranteed to receive
+a value, so that statement won’t block.
+
+This just leaves the call to `fetch` which we assume has appropriate timeouts in
+place to handle badly behaved remote servers.  If there is no error from `fetch`
+the function will return, passing through `defer` as we saw earlier and the
+goroutine is done. However if there is an error, then we must first place it
+onto the `errChan` channel.  If want to make sure all possible writes to `errChan`
+do not block, what’s the right capacity for `errChan`?
+
+```
+errChan := make(chan error, len(repos))
+```
+
+One answer would be to set the capacity of `errChan` to the size of
+`len(repos)`.  This guarantees that even if every fetch were to fail, there will
+be capacity to store each error without blocking the send.
+
+However there is another option. `restore` only returns one error value, which
+it reads from `errChan`.
+
+Rather than creating space for all possible errors, we can use a non blocking
+send to place the error onto `errChan` if non already exist, otherwise the value
+is discarded.
+
+[Go Playground](https://play.golang.org/p/irkTWbnsVB)
+
+```
+func restore(repos []string) error {
+	errChan := make(chan error, 1)
+	sem := make(chan int, 4) // four jobs at once
+	var wg sync.WaitGroup
+	wg.Add(len(repos))
+	for _, repo := range repos {
+		go worker(repo, sem, &wg, errChan)
+	}
+	wg.Wait()
+	close(errChan)
+	return <-errChan
+}
+
+func worker(repo string, sem chan int, wg *sync.WaitGroup, errChan chan error) {
+	defer wg.Done()
+	sem <- 1
+	if err := fetch(repo); err != nil {
+		select {
+		case errChan <- err:
+		  // we're the first worker to fail
+		default:
+			// some other failure has already happened
+		}
+	}
+	<-sem
+}
+```
+
+```diff
+@@ -26,7 +26,12 @@ func worker(repo string, sem chan int, wg *sync.WaitGroup, errChan chan error) {
+        defer wg.Done()
+        sem <- 1
+        if err := fetch(repo); err != nil {
+-               errChan <- err
++               select {
++               case errChan <- err:
++                       // we're the first worker to fail
++               default:
++                       // some other failure has already happened
++               }
+        }
+        <-sem
+}
+```
+
+Rather than creating space for all possible errors, we can use a non blocking
+send to place the error onto `errChan` if non already exists, otherwise the value
+is discarded.
+
+## Conclusion
+
+The name of this talk is "Concurrency made Easy", my nod to Rich Hickey’s
+seminal paper "Simple made Easy", in which Hickey demonstrates that easy and
+simple are not synonyms. They are in fact, orthogonal.
+
+Given that I’ve just spent the last 20 minutes discussing 6 bugs in a 20 line
+function, I cannot in good conscience say to you that concurrency is simple. A
+concurrent system is inherently more complex than a sequential system.
+
+* If you have to wait for the result of an operation, it’s easier to do it yourself.
+* Release locks and semaphores in the reverse order you acquired them.
+* Channels aren’t resources like files or sockets, you don’t need to close them to free them.
+* Acquire semaphores when you’re ready to use them.
+* Avoid mixing anonymous functions and goroutines
+* Before you start a goroutine, always know when, and how, it will stop.
+
+What I’ve pitched you today are not patterns to be applied in a specific
+situation.  Instead what I want you to take away from this presentation are the
+general suggestions I’ve illustrated—principals, if you will.  Principals, not
+rules or patterns. Principals, which give you a framework to answer your own
+questions as you encounter them while writing concurrent programs. Hopefully by
+applying these principals, you can make your time writing concurrent Go code, if
+not easy, at least a little easier.
