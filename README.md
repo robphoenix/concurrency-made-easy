@@ -558,7 +558,7 @@ func worker(repo string, sem chan int, wg *sync.WaitGroup, errChan chan error) {
 	if err := fetch(repo); err != nil {
 		select {
 		case errChan <- err:
-		  // we're the first worker to fail
+			// we're the first worker to fail
 		default:
 			// some other failure has already happened
 		}
