@@ -1,3 +1,5 @@
+# ![Dave Cheney](/davecheney.png)
+
 # Concurrency Made Easy
 
 This is not my work. This is a talk given by
